@@ -1,1 +1,1 @@
-obj-m := entry.o
+obj-m += entry.o
