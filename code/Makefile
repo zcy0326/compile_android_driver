@@ -1,1 +1,1 @@
-obj-m += entry.o
+obj-m += myhook.o

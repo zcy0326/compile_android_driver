@@ -1,4 +1,7 @@
 // ftrace_helper.h
+#ifndef FTRACE_HELPER_H
+#define FTRACE_HELPER_H
+
 #include <linux/ftrace.h>
 
 #define HOOK(_name, _hook, _orig) \
@@ -9,13 +12,14 @@
     }
 
 struct ftrace_hook {
-    const char *name;     // 要挂钩的函数名（如 "__x64_sys_ioctl"）
-    void *function;       // 替换函数（如 hooked_ioctl）
-    void *original;       // 保存原函数指针
+    const char *name;
+    void *function;
+    void *original;
+    unsigned long address;
+    struct ftrace_ops ops;
 };
 
-// 安装钩子
 int fh_install_hooks(struct ftrace_hook *hooks, size_t count);
-
-// 移除钩子
 void fh_remove_hooks(struct ftrace_hook *hooks, size_t count);
+
+#endif

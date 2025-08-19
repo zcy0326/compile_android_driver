@@ -1,4 +1,7 @@
 // comm.h
+#ifndef COMM_H
+#define COMM_H
+
 #include <linux/slab.h>
 #include <linux/random.h>
 #include <linux/string.h>
@@ -26,7 +29,7 @@ typedef struct _MODULE_BASE {
     uintptr_t base;
 } MODULE_BASE, *PMODULE_BASE;
 
-char *get_rand_str(void)
+static char *get_rand_str(void)
 {
     int seed;
     int flag;
@@ -53,7 +56,8 @@ char *get_rand_str(void)
 int dispatch_open(struct inode *node, struct file *file);
 int dispatch_close(struct inode *node, struct file *file);
 
-// 隐藏相关函数
 void hide_module(void);
 void cleanup_hook(void);
 void show_qt_result(int success);
+
+#endif

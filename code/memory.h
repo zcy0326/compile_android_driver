@@ -1,4 +1,7 @@
 // memory.h
+#ifndef MEMORY_H
+#define MEMORY_H
+
 #include <linux/sched.h>
 #include <linux/tty.h>
 #include <linux/io.h>
@@ -59,7 +62,7 @@ static bool safe_write_physical(phys_addr_t pa, void *buffer, size_t size)
 }
 
 #if(LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 61))
-phys_addr_t translate_linear_address(struct mm_struct* mm, uintptr_t va) {
+static phys_addr_t translate_linear_address(struct mm_struct* mm, uintptr_t va) {
     pgd_t *pgd;
     p4d_t *p4d;
     pmd_t *pmd;
@@ -98,7 +101,7 @@ phys_addr_t translate_linear_address(struct mm_struct* mm, uintptr_t va) {
     return page_addr + page_offset;
 }
 #else
-phys_addr_t translate_linear_address(struct mm_struct* mm, uintptr_t va) {
+static phys_addr_t translate_linear_address(struct mm_struct* mm, uintptr_t va) {
     pgd_t *pgd;
     pmd_t *pmd;
     pte_t *pte;
@@ -133,7 +136,7 @@ phys_addr_t translate_linear_address(struct mm_struct* mm, uintptr_t va) {
 }
 #endif
 
-bool read_process_memory(pid_t pid, uintptr_t addr, void* buffer, size_t size)
+static bool read_process_memory(pid_t pid, uintptr_t addr, void* buffer, size_t size)
 {
     struct task_struct* task;
     struct mm_struct* mm;
@@ -173,7 +176,7 @@ bool read_process_memory(pid_t pid, uintptr_t addr, void* buffer, size_t size)
     return result;
 }
 
-bool write_process_memory(pid_t pid, uintptr_t addr, void* buffer, size_t size)
+static bool write_process_memory(pid_t pid, uintptr_t addr, void* buffer, size_t size)
 {
     struct task_struct* task;
     struct mm_struct* mm;
@@ -212,3 +215,5 @@ bool write_process_memory(pid_t pid, uintptr_t addr, void* buffer, size_t size)
     mmput(mm);
     return result;
 }
+
+#endif

@@ -1,6 +1,9 @@
 // process.h
-#include "linux/sched/signal.h"
-#include "linux/types.h"
+#ifndef PROCESS_H
+#define PROCESS_H
+
+#include <linux/sched/signal.h>
+#include <linux/types.h>
 #include <linux/sched.h>
 #include <linux/module.h>
 #include <linux/tty.h>
@@ -14,9 +17,9 @@
 #endif
 #define ARC_PATH_MAX 256
 
-#include <linux/fs.h>    // For file and d_path
-#include <linux/path.h>  // For struct path
-#include <linux/dcache.h>// For d_path
+#include <linux/fs.h>
+#include <linux/path.h>
+#include <linux/dcache.h>
 #ifndef ARC_PATH_MAX
 #define ARC_PATH_MAX PATH_MAX
 #endif
@@ -62,7 +65,7 @@ static size_t get_module_base(pid_t pid, char* name)
     return count;
 }
 #else
-uintptr_t get_module_base(pid_t pid, const char *name)
+static uintptr_t get_module_base(pid_t pid, const char *name)
 {
     struct task_struct *task;
     struct mm_struct *mm;
@@ -98,13 +101,15 @@ uintptr_t get_module_base(pid_t pid, const char *name)
 }
 #endif
 
-pid_t get_process_pid(char *comm)
+static pid_t get_process_pid(char *comm)
 {
     struct task_struct *task;
     for_each_process(task) {
-        if (task->comm == comm) {
+        if (strcmp(task->comm, comm) == 0) {
             return task->pid;
         }
     }
     return 0;
 }
+
+#endif
