@@ -5,7 +5,7 @@
 #include <linux/hw_breakpoint.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
-#include <linux/pid.h>  // 新增：用于pid转换
+#include <linux/pid.h>
 #include <linux/fs.h>
 #include <linux/seq_file.h>
 #include <linux/proc_fs.h>
@@ -14,6 +14,7 @@
 #include <linux/kthread.h>
 #include <linux/uaccess.h>
 #include <linux/sched/task.h>
+#include <linux/rculist.h>  // 新增：RCU相关头文件
 
 // 模块参数：目标包名、SO库名和偏移量
 static char *target_package = NULL;
@@ -28,34 +29,44 @@ static struct task_struct *monitor_thread = NULL;
 static bool breakpoint_active = false;
 
 /**
- * 从包名获取主进程PID
+ * 从包名获取主进程PID（修复task->parent安全访问和kernel_read返回值处理）
  */
 static pid_t get_pid_by_package(const char *package)
 {
     struct task_struct *task;
     char comm[256];
     int len;
-    // 变量声明移到开头（C90标准）
     struct file *file;
     char buf[1024];
     ssize_t ret;
+    struct task_struct *parent;  // 用于安全访问父进程
 
     rcu_read_lock();
     for_each_process(task) {
+        // 构建cmdline路径
         len = snprintf(comm, sizeof(comm), "/proc/%d/cmdline", task->pid);
         if (len <= 0 || len >= sizeof(comm))
             continue;
 
+        // 打开文件（检查是否成功）
         file = filp_open(comm, O_RDONLY, 0);
         if (IS_ERR(file))
             continue;
 
+        // 读取文件内容（完整处理返回值）
         memset(buf, 0, sizeof(buf));
         ret = kernel_read(file, buf, sizeof(buf)-1, &file->f_pos);
-        filp_close(file, NULL);
+        filp_close(file, NULL);  // 确保文件关闭
 
-        if (ret > 0 && strstr(buf, package)) {
-            if (task->parent && task->parent->pid == 1) {
+        // 处理读取失败或空内容的情况
+        if (ret <= 0)
+            continue;
+
+        // 检查包名匹配
+        if (strstr(buf, package)) {
+            // 安全访问父进程（RCU保护）
+            parent = rcu_dereference(task->parent);
+            if (parent && parent->pid == 1) {  // 父进程为init（PID=1）
                 rcu_read_unlock();
                 return task->pid;
             }
@@ -85,18 +96,18 @@ static int wait_for_process(const char *package)
 }
 
 /**
- * 通过SO库名和偏移量计算实际地址
+ * 通过SO库名和偏移量计算实际地址（修复kernel_read返回值处理）
  */
 static unsigned long get_address_by_so_offset(pid_t pid, const char *so_name, unsigned long offset)
 {
     char maps_path[256];
-    // 变量声明移到开头（C90标准）
     struct file *file;
     char buf[1024];
     ssize_t ret;
     unsigned long start_addr = 0;
     loff_t pos = 0;
 
+    // 构建maps路径
     snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
     file = filp_open(maps_path, O_RDONLY, 0);
     if (IS_ERR(file)) {
@@ -104,6 +115,7 @@ static unsigned long get_address_by_so_offset(pid_t pid, const char *so_name, un
         return 0;
     }
 
+    // 读取并解析maps内容（完整处理返回值）
     memset(buf, 0, sizeof(buf));
     while ((ret = kernel_read(file, buf, sizeof(buf)-1, &pos)) > 0) {
         buf[ret] = '\0';
@@ -113,16 +125,17 @@ static unsigned long get_address_by_so_offset(pid_t pid, const char *so_name, un
                 break;
             }
         }
+        // 处理长行（未读完的情况）
         if (ret == sizeof(buf)-1 && buf[sizeof(buf)-2] != '\n') {
             while (pos < file->f_inode->i_size && buf[ret-1] != '\n') {
                 ret = kernel_read(file, buf, 1, &pos);
-                if (ret <= 0) break;
+                if (ret <= 0) break;  // 处理读取失败
             }
         }
         memset(buf, 0, sizeof(buf));
     }
 
-    filp_close(file, NULL);
+    filp_close(file, NULL);  // 确保文件关闭
     return start_addr ? (start_addr + offset) : 0;
 }
 
@@ -133,15 +146,15 @@ static void hw_breakpoint_handler(struct perf_event *bp,
                                  struct perf_sample_data *data,
                                  struct pt_regs *regs)
 {
-    // 变量声明移到开头（C90标准）
     unsigned long original_pc;
 
+    // 验证目标进程和断点状态
     if (current->pid != target_pid || !breakpoint_active)
         return;
 
-    // 跳过当前指令（使指令失效）
+    // 跳过当前指令（ARM64指令通常4字节）
     original_pc = regs->pc;
-    regs->pc = original_pc + 4;  // ARM64指令通常4字节
+    regs->pc = original_pc + 4;
     
     // 修改W21寄存器（X21低32位）为1
     regs->regs[21] = (regs->regs[21] & 0xFFFFFFFF00000000) | 0x1;
@@ -155,33 +168,33 @@ static void hw_breakpoint_handler(struct perf_event *bp,
  */
 static int setup_hw_breakpoint(void)
 {
-    // 变量声明移到开头（C90标准）
     struct perf_event_attr attr;
-    struct task_struct *target_task;  // 新增：进程结构体指针
+    struct task_struct *target_task;
 
+    // 释放已有断点
     if (bp_event) {
         perf_event_release_kernel(bp_event);
         bp_event = NULL;
     }
 
-    // 通过PID获取task_struct指针（修复参数类型错误）
+    // 获取目标进程结构体（带有效性检查）
     target_task = pid_task(find_vpid(target_pid), PIDTYPE_PID);
     if (!target_task) {
-        printk),ERN_ERR "无法获取进程结构体（PID: %d）\n", target_pid);
+        printk(KERN_ERR "无法获取进程结构体（PID: %d）\n", target_pid);
         return -EINVAL;
     }
 
-    // 初始化断点属性（使用HW_BREAKPOINT_X表示执行触发，修复宏定义错误）
+    // 初始化断点属性（安卓5.10兼容）
     hw_breakpoint_init(&attr);
     attr.bp_addr = target_addr;
     attr.bp_len = HW_BREAKPOINT_LEN_4;
-    attr.bp_type = HW_BREAKPOINT_X;  // 替换HW_BREAKPOINT_EXECUTE为HW_BREAKPOINT_X
+    attr.bp_type = HW_BREAKPOINT_X;  // 执行触发（5.10内核宏）
     attr.disabled = 0;
 
-    // 第3个参数传入task_struct指针（修复类型错误）
+    // 创建硬件断点
     bp_event = perf_event_create_kernel_counter(&attr,
                                          0,
-                                         target_task,  // 这里传入进程结构体指针
+                                         target_task,
                                          hw_breakpoint_handler,
                                          NULL);
 
@@ -202,11 +215,11 @@ static int setup_hw_breakpoint(void)
  */
 static void refresh_breakpoint_if_needed(void)
 {
-    // 变量声明移到开头（C90标准）
     pid_t current_pid;
 
     current_pid = get_pid_by_package(target_package);
     
+    // 处理进程退出或重启
     if (current_pid == 0 || current_pid != target_pid) {
         printk(KERN_INFO "目标进程已退出或重启，重新等待...\n");
         breakpoint_active = false;
@@ -224,36 +237,36 @@ static void refresh_breakpoint_if_needed(void)
 }
 
 /**
- * 内核线程函数：监控进程状态并维护断点
+ * 内核线程：监控进程状态
  */
 static int monitor_process(void *data)
 {
-    // 变量声明移到开头（C90标准）
-    int ret;
-
-    ret = wait_for_process(target_package);
-    if (ret != 0) {
+    // 等待目标进程启动
+    if (wait_for_process(target_package) != 0) {
         printk(KERN_ERR "监控线程终止\n");
         return -1;
     }
 
+    // 获取目标地址
     target_addr = get_address_by_so_offset(target_pid, target_so, so_offset);
     if (target_addr == 0) {
         printk(KERN_ERR "无法获取目标地址，模块无法正常工作\n");
         return -1;
     }
 
-    ret = setup_hw_breakpoint();
-    if (ret != 0) {
+    // 设置硬件断点
+    if (setup_hw_breakpoint() != 0) {
         printk(KERN_ERR "无法设置硬件断点，模块无法正常工作\n");
         return -1;
     }
 
+    // 持续监控
     while (!kthread_should_stop()) {
         refresh_breakpoint_if_needed();
         msleep(5000);
     }
 
+    // 清理资源
     breakpoint_active = false;
     if (bp_event) {
         perf_event_release_kernel(bp_event);
@@ -265,19 +278,18 @@ static int monitor_process(void *data)
 }
 
 /**
- * 模块初始化函数
+ * 模块初始化
  */
 static int __init hw_breakpoint_init_module(void)
 {
-    // 变量声明移到开头（C90标准）
-    int ret;
-
+    // 检查参数有效性
     if (!target_package || !target_so || so_offset == 0) {
         printk(KERN_ERR "请设置目标包名、SO库名和偏移量\n");
-        printk(KERN_ERR "示例: insmod hw_breakpoint_v4.ko target_package=com.example.app target_so=libexample.so so_offset=0x12345\n");
+        printk(KERN_ERR "示例: insmod hw_breakpoint.ko target_package=com.example.app target_so=libexample.so so_offset=0x12345\n");
         return -EINVAL;
     }
 
+    // 创建监控线程
     monitor_thread = kthread_run(monitor_process, NULL, "hw_break_monitor");
     if (IS_ERR(monitor_thread)) {
         printk(KERN_ERR "创建监控线程失败: %ld\n", PTR_ERR(monitor_thread));
@@ -289,15 +301,17 @@ static int __init hw_breakpoint_init_module(void)
 }
 
 /**
- * 模块退出函数
+ * 模块退出
  */
 static void __exit hw_breakpoint_exit_module(void)
 {
+    // 停止监控线程
     if (monitor_thread) {
         kthread_stop(monitor_thread);
         monitor_thread = NULL;
     }
 
+    // 释放断点资源
     breakpoint_active = false;
     if (bp_event) {
         perf_event_release_kernel(bp_event);
