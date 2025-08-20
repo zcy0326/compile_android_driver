@@ -5,7 +5,7 @@
 #include <linux/hw_breakpoint.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
-#include <linux/pid.h>
+#include <linux/pid.h>  // 新增：用于pid转换
 #include <linux/fs.h>
 #include <linux/seq_file.h>
 #include <linux/proc_fs.h>
@@ -35,6 +35,10 @@ static pid_t get_pid_by_package(const char *package)
     struct task_struct *task;
     char comm[256];
     int len;
+    // 变量声明移到开头（C90标准）
+    struct file *file;
+    char buf[1024];
+    ssize_t ret;
 
     rcu_read_lock();
     for_each_process(task) {
@@ -42,12 +46,12 @@ static pid_t get_pid_by_package(const char *package)
         if (len <= 0 || len >= sizeof(comm))
             continue;
 
-        struct file *file = filp_open(comm, O_RDONLY, 0);
+        file = filp_open(comm, O_RDONLY, 0);
         if (IS_ERR(file))
             continue;
 
-        char buf[1024] = {0};
-        ssize_t ret = kernel_read(file, buf, sizeof(buf)-1, &file->f_pos);
+        memset(buf, 0, sizeof(buf));
+        ret = kernel_read(file, buf, sizeof(buf)-1, &file->f_pos);
         filp_close(file, NULL);
 
         if (ret > 0 && strstr(buf, package)) {
@@ -86,6 +90,7 @@ static int wait_for_process(const char *package)
 static unsigned long get_address_by_so_offset(pid_t pid, const char *so_name, unsigned long offset)
 {
     char maps_path[256];
+    // 变量声明移到开头（C90标准）
     struct file *file;
     char buf[1024];
     ssize_t ret;
@@ -123,22 +128,22 @@ static unsigned long get_address_by_so_offset(pid_t pid, const char *so_name, un
 
 /**
  * 硬件断点触发回调函数
- * 使当前指令失效（跳过执行）并将W21寄存器设置为1
  */
 static void hw_breakpoint_handler(struct perf_event *bp,
                                  struct perf_sample_data *data,
                                  struct pt_regs *regs)
 {
-    // 验证是否是目标进程
+    // 变量声明移到开头（C90标准）
+    unsigned long original_pc;
+
     if (current->pid != target_pid || !breakpoint_active)
         return;
 
-    // ARM64指令通常是4字节长度，通过修改PC寄存器跳过当前指令
-    // 这样就使目标地址的指令失效，而不修改内存内容
-    unsigned long original_pc = regs->pc;
-    regs->pc = original_pc + 4;  // 跳过当前指令
+    // 跳过当前指令（使指令失效）
+    original_pc = regs->pc;
+    regs->pc = original_pc + 4;  // ARM64指令通常4字节
     
-    // 修改W21寄存器（X21的低32位）为1
+    // 修改W21寄存器（X21低32位）为1
     regs->regs[21] = (regs->regs[21] & 0xFFFFFFFF00000000) | 0x1;
     
     printk(KERN_INFO "已跳过指令: 0x%lx -> 0x%lx, W21已设置为1\n",
@@ -150,23 +155,33 @@ static void hw_breakpoint_handler(struct perf_event *bp,
  */
 static int setup_hw_breakpoint(void)
 {
+    // 变量声明移到开头（C90标准）
     struct perf_event_attr attr;
+    struct task_struct *target_task;  // 新增：进程结构体指针
 
     if (bp_event) {
         perf_event_release_kernel(bp_event);
         bp_event = NULL;
     }
 
-    // 初始化断点属性 - 执行时触发
+    // 通过PID获取task_struct指针（修复参数类型错误）
+    target_task = pid_task(find_vpid(target_pid), PIDTYPE_PID);
+    if (!target_task) {
+        printk),ERN_ERR "无法获取进程结构体（PID: %d）\n", target_pid);
+        return -EINVAL;
+    }
+
+    // 初始化断点属性（使用HW_BREAKPOINT_X表示执行触发，修复宏定义错误）
     hw_breakpoint_init(&attr);
     attr.bp_addr = target_addr;
     attr.bp_len = HW_BREAKPOINT_LEN_4;
-    attr.bp_type = HW_BREAKPOINT_EXECUTE;
+    attr.bp_type = HW_BREAKPOINT_X;  // 替换HW_BREAKPOINT_EXECUTE为HW_BREAKPOINT_X
     attr.disabled = 0;
 
+    // 第3个参数传入task_struct指针（修复类型错误）
     bp_event = perf_event_create_kernel_counter(&attr,
                                          0,
-                                         target_pid,
+                                         target_task,  // 这里传入进程结构体指针
                                          hw_breakpoint_handler,
                                          NULL);
 
@@ -187,7 +202,10 @@ static int setup_hw_breakpoint(void)
  */
 static void refresh_breakpoint_if_needed(void)
 {
-    pid_t current_pid = get_pid_by_package(target_package);
+    // 变量声明移到开头（C90标准）
+    pid_t current_pid;
+
+    current_pid = get_pid_by_package(target_package);
     
     if (current_pid == 0 || current_pid != target_pid) {
         printk(KERN_INFO "目标进程已退出或重启，重新等待...\n");
@@ -210,7 +228,11 @@ static void refresh_breakpoint_if_needed(void)
  */
 static int monitor_process(void *data)
 {
-    if (wait_for_process(target_package) != 0) {
+    // 变量声明移到开头（C90标准）
+    int ret;
+
+    ret = wait_for_process(target_package);
+    if (ret != 0) {
         printk(KERN_ERR "监控线程终止\n");
         return -1;
     }
@@ -221,7 +243,8 @@ static int monitor_process(void *data)
         return -1;
     }
 
-    if (setup_hw_breakpoint() != 0) {
+    ret = setup_hw_breakpoint();
+    if (ret != 0) {
         printk(KERN_ERR "无法设置硬件断点，模块无法正常工作\n");
         return -1;
     }
@@ -246,6 +269,9 @@ static int monitor_process(void *data)
  */
 static int __init hw_breakpoint_init_module(void)
 {
+    // 变量声明移到开头（C90标准）
+    int ret;
+
     if (!target_package || !target_so || so_offset == 0) {
         printk(KERN_ERR "请设置目标包名、SO库名和偏移量\n");
         printk(KERN_ERR "示例: insmod hw_breakpoint_v4.ko target_package=com.example.app target_so=libexample.so so_offset=0x12345\n");
@@ -295,4 +321,3 @@ MODULE_DESCRIPTION("安卓5.10内核硬件断点模块（跳过指令并修改W2
 
 module_init(hw_breakpoint_init_module);
 module_exit(hw_breakpoint_exit_module);
-    
